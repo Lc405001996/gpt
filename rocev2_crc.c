@@ -12,6 +12,7 @@
 #define ETHERTYPE_VLAN_8021AD 0x88A8u
 #define VLAN_TAG_LEN 4u
 #define ICRC_LEN 4u
+#define IPPROTO_UDP 17u
 
 static uint32_t crc32_table[256];
 static int crc32_table_ready = 0;
@@ -104,6 +105,10 @@ static int rocev2_mask_mutable_fields(uint8_t *pkt, size_t len, size_t ip_off) {
             return -1;
         }
 
+        if (ip[9] != IPPROTO_UDP) {
+            return -1;
+        }
+
         ip[1] = 0xFFu;
         ip[8] = 0xFFu;
         ip[10] = 0xFFu;
@@ -112,6 +117,10 @@ static int rocev2_mask_mutable_fields(uint8_t *pkt, size_t len, size_t ip_off) {
         udp_off = ip_off + ihl;
     } else if (version == 6u) {
         if (ip_len < 40) {
+            return -1;
+        }
+
+        if (ip[6] != IPPROTO_UDP) {
             return -1;
         }
 

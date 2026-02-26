@@ -4,6 +4,13 @@
 #include <stdio.h>
 #include <string.h>
 
+static uint32_t read_le32(const uint8_t *p) {
+    return ((uint32_t)p[0]) |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
 int main(void) {
     static const uint8_t frame_with_icrc[] =
         "\x00\x0c\x29\x74\x53\xe0\x00\x0c\x29\xae\x57\x1d\x08\x00\x45\x00"
@@ -80,11 +87,28 @@ int main(void) {
 
     memcpy(frame_copy, frame_with_icrc, frame_len);
 
-    if (rocev2_icrc_verify(frame_with_icrc, frame_len) != 0) {
-        fprintf(stderr, "verify failed on provided frame\n");
+    /* 1) 先验证基础 rocev2_icrc 计算结果是否与报文尾部 iCRC 一致。 */
+    uint32_t computed_icrc = 0;
+    uint32_t expected_icrc = read_le32(frame_with_icrc + frame_len - 4);
+    if (rocev2_icrc(frame_with_icrc, frame_len - 4, &computed_icrc) != 0) {
+        fprintf(stderr, "base rocev2_icrc calculation failed\n");
         return 1;
     }
+    if (computed_icrc != expected_icrc) {
+        fprintf(stderr, "base rocev2_icrc mismatch: expected=%08x actual=%08x\n",
+                expected_icrc, computed_icrc);
+        return 2;
+    }
+    printf("[OK] step1 base rocev2_icrc matched expected tail: 0x%08x\n", computed_icrc);
 
+    /* 2) 再验证高层 verify 接口。 */
+    if (rocev2_icrc_verify(frame_with_icrc, frame_len) != 0) {
+        fprintf(stderr, "verify failed on provided frame\n");
+        return 3;
+    }
+    puts("[OK] step2 rocev2_icrc_verify passed on known-good full frame");
+
+    /* 3) 验证 fill 接口回填结果。 */
     frame_copy[frame_len - 4] = 0x00;
     frame_copy[frame_len - 3] = 0x00;
     frame_copy[frame_len - 2] = 0x00;
@@ -92,20 +116,41 @@ int main(void) {
 
     if (rocev2_icrc_fill(frame_copy, frame_len) != 0) {
         fprintf(stderr, "fill failed\n");
-        return 2;
+        return 4;
     }
 
     if (memcmp(frame_copy + frame_len - 4, frame_with_icrc + frame_len - 4, 4) != 0) {
         fprintf(stderr, "filled crc does not match expected tail\n");
-        return 3;
+        return 5;
     }
+    puts("[OK] step3 rocev2_icrc_fill wrote expected iCRC bytes");
 
     frame_copy[100] ^= 0x01u;
     if (rocev2_icrc_verify(frame_copy, frame_len) == 0) {
         fprintf(stderr, "verify should fail after payload tamper\n");
-        return 4;
+        return 6;
     }
+    puts("[OK] step4 tampered payload was detected by rocev2_icrc_verify");
 
+    /* Non-UDP IPv4 packet should be rejected. */
+    uint8_t non_udp_frame[14 + 20 + 8 + 12 + 4] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xAA, 0xBB, 0x08, 0x00,
+        0x45, 0x00, 0x00, 0x2C, 0x12, 0x34, 0x00, 0x00,
+        0x40, 0x06, 0x00, 0x00, 0xC0, 0xA8, 0x01, 0x01,
+        0xC0, 0xA8, 0x01, 0x02, 0x12, 0xB7, 0x12, 0xB7,
+        0x00, 0x18, 0x00, 0x00, 0x81, 0x00, 0xFF, 0xFF,
+        0x00, 0x12, 0x34, 0x56, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    };
+
+    if (rocev2_icrc_fill(non_udp_frame, sizeof(non_udp_frame)) == 0) {
+        fprintf(stderr, "non-UDP frame should be rejected\n");
+        return 7;
+    }
+    puts("[OK] step5 non-UDP frame was rejected by rocev2_icrc_fill");
+
+    puts("[OK] all steps passed");
     puts("PASS");
     return 0;
 }
