@@ -2,17 +2,10 @@
 
 #include <stdint.h>
 #include <stdio.h>
-
-static uint32_t read_be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
-static uint32_t read_le32(const uint8_t *p) {
-    return ((uint32_t)p[3] << 24) | ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[0];
-}
+#include <string.h>
 
 int main(void) {
-    const uint8_t frame_with_icrc[] =
+    static const uint8_t frame_with_icrc[] =
         "\x00\x0c\x29\x74\x53\xe0\x00\x0c\x29\xae\x57\x1d\x08\x00\x45\x00"
         "\x04\x2c\xd1\x75\x40\x00\x40\x11\x4c\xf9\xc0\xa8\x4b\x80\xc0\xa8"
         "\x4b\x81\xdf\x94\x12\xb7\x04\x18\x00\x00\x07\x00\xff\xff\x00\x00"
@@ -82,37 +75,37 @@ int main(void) {
         "\xbf\x2e\x91\x51\x03\x6d\x2f\x8b\xe0\x5c\x4b\x1e\xd5\xc9\xb2\x9e"
         "\x3b\x94\x10\x90\x57\x84\x5b\xd7\x4c\x00";
 
-    const size_t frame_len = sizeof(frame_with_icrc) - 1; /* exclude C-string trailing '\0' */
-    if (frame_len < 4) {
-        fprintf(stderr, "frame too short\n");
+    const size_t frame_len = sizeof(frame_with_icrc) - 1;
+    uint8_t frame_copy[sizeof(frame_with_icrc) - 1];
+
+    memcpy(frame_copy, frame_with_icrc, frame_len);
+
+    if (rocev2_icrc_verify(frame_with_icrc, frame_len) != 0) {
+        fprintf(stderr, "verify failed on provided frame\n");
         return 1;
     }
 
-    uint32_t icrc = 0;
-    if (rocev2_icrc(frame_with_icrc, frame_len - 4, &icrc) != 0) {
-        fprintf(stderr, "rocev2_icrc() failed\n");
-        return 1;
+    frame_copy[frame_len - 4] = 0x00;
+    frame_copy[frame_len - 3] = 0x00;
+    frame_copy[frame_len - 2] = 0x00;
+    frame_copy[frame_len - 1] = 0x00;
+
+    if (rocev2_icrc_fill(frame_copy, frame_len) != 0) {
+        fprintf(stderr, "fill failed\n");
+        return 2;
     }
 
-    const uint8_t *tail = frame_with_icrc + (frame_len - 4);
-    const uint32_t expected_be = read_be32(tail);
-    const uint32_t expected_le = read_le32(tail);
-
-    printf("computed iCRC = 0x%08X\n", icrc);
-    printf("tail bytes    = %02X %02X %02X %02X\n", tail[0], tail[1], tail[2], tail[3]);
-    printf("expected(be)  = 0x%08X\n", expected_be);
-    printf("expected(le)  = 0x%08X\n", expected_le);
-
-    if (icrc == expected_le) {
-        printf("PASS: computed iCRC matches frame tail (little-endian).\n");
-        return 0;
+    if (memcmp(frame_copy + frame_len - 4, frame_with_icrc + frame_len - 4, 4) != 0) {
+        fprintf(stderr, "filled crc does not match expected tail\n");
+        return 3;
     }
 
-    if (icrc == expected_be) {
-        printf("PASS: computed iCRC matches frame tail (big-endian).\n");
-        return 0;
+    frame_copy[100] ^= 0x01u;
+    if (rocev2_icrc_verify(frame_copy, frame_len) == 0) {
+        fprintf(stderr, "verify should fail after payload tamper\n");
+        return 4;
     }
 
-    fprintf(stderr, "FAIL: computed iCRC does not match frame tail.\n");
-    return 2;
+    puts("PASS");
+    return 0;
 }
