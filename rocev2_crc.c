@@ -28,11 +28,18 @@ static uint32_t read_le32(const uint8_t *p) {
            ((uint32_t)p[3] << 24);
 }
 
-static void write_le32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v & 0xFFu);
-    p[1] = (uint8_t)((v >> 8) & 0xFFu);
-    p[2] = (uint8_t)((v >> 16) & 0xFFu);
-    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+static uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[3]) |
+           ((uint32_t)p[2] << 8) |
+           ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[0] << 24);
+}
+
+static void write_be32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)((v >> 24) & 0xFFu);
+    p[1] = (uint8_t)((v >> 16) & 0xFFu);
+    p[2] = (uint8_t)((v >> 8) & 0xFFu);
+    p[3] = (uint8_t)(v & 0xFFu);
 }
 
 static void crc32_init_table(void) {
@@ -201,7 +208,7 @@ int rocev2_icrc_fill(uint8_t *packet, size_t len) {
         return -1;
     }
 
-    write_le32(packet + (len - ICRC_LEN), icrc);
+    write_be32(packet + (len - ICRC_LEN), icrc);
     return 0;
 }
 
@@ -218,8 +225,13 @@ int rocev2_icrc_verify(const uint8_t *packet, size_t len) {
         return -1;
     }
 
-    uint32_t actual = read_le32(packet + (len - ICRC_LEN));
-    return (computed == actual) ? 0 : 1;
+    uint32_t actual_be = read_be32(packet + (len - ICRC_LEN));
+    uint32_t actual_le = read_le32(packet + (len - ICRC_LEN));
+    if (computed == actual_be || computed == actual_le) {
+        return 0;
+    }
+
+    return 1;
 }
 
 #ifdef ROCEV2_CRC_DEMO
