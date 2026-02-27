@@ -11,8 +11,72 @@ static uint32_t read_le32(const uint8_t *p) {
            ((uint32_t)p[3] << 24);
 }
 
+typedef struct {
+    const char *name;
+    const uint8_t *frame_with_icrc;
+    size_t frame_len;
+} known_good_case_t;
+
+static int run_known_good_case(const known_good_case_t *tc) {
+    uint32_t computed_icrc = 0;
+    uint32_t expected_icrc = 0;
+    uint8_t frame_copy[2048];
+    size_t tamper_offset = 0;
+
+    if (!tc || !tc->frame_with_icrc || tc->frame_len < 5) {
+        fprintf(stderr, "invalid test case definition\n");
+        return -1;
+    }
+    if (tc->frame_len > sizeof(frame_copy)) {
+        fprintf(stderr, "case '%s' is too large (%zu bytes)\n", tc->name, tc->frame_len);
+        return -1;
+    }
+
+    memcpy(frame_copy, tc->frame_with_icrc, tc->frame_len);
+
+    expected_icrc = read_le32(tc->frame_with_icrc + tc->frame_len - 4);
+    if (rocev2_icrc(tc->frame_with_icrc, tc->frame_len - 4, &computed_icrc) != 0) {
+        fprintf(stderr, "[%s] base rocev2_icrc calculation failed\n", tc->name);
+        return -1;
+    }
+    if (computed_icrc != expected_icrc) {
+        fprintf(stderr, "[%s] base rocev2_icrc mismatch: expected=%08x actual=%08x\n",
+                tc->name, expected_icrc, computed_icrc);
+        return -1;
+    }
+
+    if (rocev2_icrc_verify(tc->frame_with_icrc, tc->frame_len) != 0) {
+        fprintf(stderr, "[%s] verify failed on provided frame\n", tc->name);
+        return -1;
+    }
+
+    memset(frame_copy + tc->frame_len - 4, 0, 4);
+    if (rocev2_icrc_fill(frame_copy, tc->frame_len) != 0) {
+        fprintf(stderr, "[%s] fill failed\n", tc->name);
+        return -1;
+    }
+    if (memcmp(frame_copy + tc->frame_len - 4, tc->frame_with_icrc + tc->frame_len - 4, 4) != 0) {
+        fprintf(stderr, "[%s] filled crc does not match expected tail\n", tc->name);
+        return -1;
+    }
+
+    tamper_offset = (tc->frame_len > 64) ? 64 : (tc->frame_len - 5);
+    frame_copy[tamper_offset] ^= 0x01u;
+    if (rocev2_icrc_verify(frame_copy, tc->frame_len) == 0) {
+        fprintf(stderr, "[%s] verify should fail after payload tamper\n", tc->name);
+        return -1;
+    }
+
+    printf("[OK] case '%s' passed compute/verify/fill/tamper checks\n", tc->name);
+    return 0;
+}
+
 int main(void) {
-    static const uint8_t frame_with_icrc[] =
+    /*
+     * Add more known-good RoCEv2 samples here.
+     * Usage: paste your full frame bytes (including 4-byte iCRC tail) as a C string.
+     */
+    static const uint8_t frame_with_icrc_large[] =
         "\x00\x0c\x29\x74\x53\xe0\x00\x0c\x29\xae\x57\x1d\x08\x00\x45\x00"
         "\x04\x2c\xd1\x75\x40\x00\x40\x11\x4c\xf9\xc0\xa8\x4b\x80\xc0\xa8"
         "\x4b\x81\xdf\x94\x12\xb7\x04\x18\x00\x00\x07\x00\xff\xff\x00\x00"
@@ -82,55 +146,39 @@ int main(void) {
         "\xbf\x2e\x91\x51\x03\x6d\x2f\x8b\xe0\x5c\x4b\x1e\xd5\xc9\xb2\x9e"
         "\x3b\x94\x10\x90\x57\x84\x5b\xd7\x4c\x00";
 
-    const size_t frame_len = sizeof(frame_with_icrc) - 1;
-    uint8_t frame_copy[sizeof(frame_with_icrc) - 1];
+    static const uint8_t frame_with_icrc_small[] =
+        "\x00\x0c\x29\xae\x57\x1d\x00\x0c\x29\x74\x53\xe0\x08\x00\x45\x00"
+        "\x00\x38\x20\x39\x40\x00\x40\x11\x02\x2a\xc0\xa8\x4b\x81\xc0\xa8"
+        "\x4b\x80\xdf\x94\x12\xb7\x00\x24\x00\x00\x12\x00\xff\xff\x00\x00"
+        "\x00\x11\x00\x68\x92\x4a\x1f\x00\x00\x03\x3d\xe5\x30\xc7\x0f\x0d"
+        "\x00\x02\x6f\xf6\xa8\xeb";
 
-    memcpy(frame_copy, frame_with_icrc, frame_len);
+    static const known_good_case_t known_good_cases[] = {
+        {
+            .name = "large_reference_frame",
+            .frame_with_icrc = frame_with_icrc_large,
+            .frame_len = sizeof(frame_with_icrc_large) - 1,
+        },
+        {
+            .name = "small_user_frame",
+            .frame_with_icrc = frame_with_icrc_small,
+            .frame_len = sizeof(frame_with_icrc_small) - 1,
+        },
+        /*
+         * Paste more cases here, for example:
+         * {
+         *   .name = "my_new_case",
+         *   .frame_with_icrc = my_new_frame,
+         *   .frame_len = sizeof(my_new_frame) - 1,
+         * },
+         */
+    };
 
-    /* 1) 先验证基础 rocev2_icrc 计算结果是否与报文尾部 iCRC 一致。 */
-    uint32_t computed_icrc = 0;
-    uint32_t expected_icrc = read_le32(frame_with_icrc + frame_len - 4);
-    if (rocev2_icrc(frame_with_icrc, frame_len - 4, &computed_icrc) != 0) {
-        fprintf(stderr, "base rocev2_icrc calculation failed\n");
-        return 1;
+    for (size_t i = 0; i < (sizeof(known_good_cases) / sizeof(known_good_cases[0])); ++i) {
+        if (run_known_good_case(&known_good_cases[i]) != 0) {
+            return (int)(10 + i);
+        }
     }
-    if (computed_icrc != expected_icrc) {
-        fprintf(stderr, "base rocev2_icrc mismatch: expected=%08x actual=%08x\n",
-                expected_icrc, computed_icrc);
-        return 2;
-    }
-    printf("[OK] step1 base rocev2_icrc matched expected tail: 0x%08x\n", computed_icrc);
-
-    /* 2) 再验证高层 verify 接口。 */
-    if (rocev2_icrc_verify(frame_with_icrc, frame_len) != 0) {
-        fprintf(stderr, "verify failed on provided frame\n");
-        return 3;
-    }
-    puts("[OK] step2 rocev2_icrc_verify passed on known-good full frame");
-
-    /* 3) 验证 fill 接口回填结果。 */
-    frame_copy[frame_len - 4] = 0x00;
-    frame_copy[frame_len - 3] = 0x00;
-    frame_copy[frame_len - 2] = 0x00;
-    frame_copy[frame_len - 1] = 0x00;
-
-    if (rocev2_icrc_fill(frame_copy, frame_len) != 0) {
-        fprintf(stderr, "fill failed\n");
-        return 4;
-    }
-
-    if (memcmp(frame_copy + frame_len - 4, frame_with_icrc + frame_len - 4, 4) != 0) {
-        fprintf(stderr, "filled crc does not match expected tail\n");
-        return 5;
-    }
-    puts("[OK] step3 rocev2_icrc_fill wrote expected iCRC bytes");
-
-    frame_copy[100] ^= 0x01u;
-    if (rocev2_icrc_verify(frame_copy, frame_len) == 0) {
-        fprintf(stderr, "verify should fail after payload tamper\n");
-        return 6;
-    }
-    puts("[OK] step4 tampered payload was detected by rocev2_icrc_verify");
 
     /* Non-UDP IPv4 packet should be rejected. */
     uint8_t non_udp_frame[14 + 20 + 8 + 12 + 4] = {
@@ -148,7 +196,7 @@ int main(void) {
         fprintf(stderr, "non-UDP frame should be rejected\n");
         return 7;
     }
-    puts("[OK] step5 non-UDP frame was rejected by rocev2_icrc_fill");
+    puts("[OK] non-UDP frame was rejected by rocev2_icrc_fill");
 
     puts("[OK] all steps passed");
     puts("PASS");
