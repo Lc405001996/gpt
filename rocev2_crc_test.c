@@ -174,59 +174,11 @@ int main(void) {
          */
     };
 
-    {
-        /*
-         * Use a bounded tamper offset so short frames can reuse the same check
-         * without risking out-of-bounds access.
-         */
-        const size_t tamper_offset = (frame_len > 64) ? 64 : (frame_len - 5);
-        frame_copy[tamper_offset] ^= 0x01u;
+    for (size_t i = 0; i < sizeof(known_good_cases) / sizeof(known_good_cases[0]); ++i) {
+        if (run_known_good_case(&known_good_cases[i]) != 0) {
+            return 6;
+        }
     }
-    if (rocev2_icrc_verify(frame_copy, frame_len) == 0) {
-        fprintf(stderr, "verify should fail after payload tamper\n");
-        return 6;
-    }
-
-    /* Additional known-good RoCEv2 sample provided by user. */
-    static const uint8_t frame_with_icrc_small[] =
-        "\x00\x0c\x29\xae\x57\x1d\x00\x0c\x29\x74\x53\xe0\x08\x00\x45\x00"
-        "\x00\x38\x20\x39\x40\x00\x40\x11\x02\x2a\xc0\xa8\x4b\x81\xc0\xa8"
-        "\x4b\x80\xdf\x94\x12\xb7\x00\x24\x00\x00\x12\x00\xff\xff\x00\x00"
-        "\x00\x11\x00\x68\x92\x4a\x1f\x00\x00\x03\x3d\xe5\x30\xc7\x0f\x0d"
-        "\x00\x02\x6f\xf6\xa8\xeb";
-
-    const size_t small_len = sizeof(frame_with_icrc_small) - 1;
-    uint8_t small_copy[sizeof(frame_with_icrc_small) - 1];
-    uint32_t small_computed_icrc = 0;
-    uint32_t small_expected_icrc = read_le32(frame_with_icrc_small + small_len - 4);
-    memcpy(small_copy, frame_with_icrc_small, small_len);
-
-    if (rocev2_icrc(frame_with_icrc_small, small_len - 4, &small_computed_icrc) != 0) {
-        fprintf(stderr, "small sample base rocev2_icrc calculation failed\n");
-        return 8;
-    }
-    if (small_computed_icrc != small_expected_icrc) {
-        fprintf(stderr,
-                "small sample base rocev2_icrc mismatch: expected=%08x actual=%08x\n",
-                small_expected_icrc, small_computed_icrc);
-        return 9;
-    }
-
-    if (rocev2_icrc_verify(frame_with_icrc_small, small_len) != 0) {
-        fprintf(stderr, "verify failed on small provided frame\n");
-        return 10;
-    }
-
-    memset(small_copy + small_len - 4, 0, 4);
-    if (rocev2_icrc_fill(small_copy, small_len) != 0) {
-        fprintf(stderr, "fill failed on small provided frame\n");
-        return 11;
-    }
-    if (memcmp(small_copy + small_len - 4, frame_with_icrc_small + small_len - 4, 4) != 0) {
-        fprintf(stderr, "small sample filled crc does not match expected tail\n");
-        return 12;
-    }
-    puts("[OK] step4b small known-good frame passed compute/verify/fill checks");
 
     /* Non-UDP IPv4 packet should be rejected. */
     uint8_t non_udp_frame[14 + 20 + 8 + 12 + 4] = {
