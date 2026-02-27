@@ -26,6 +26,8 @@ int rocev2_icrc(const uint8_t *packet, size_t len, uint32_t *out_icrc);
  * @param packet  指向完整以太网帧（包含末尾 4 字节 iCRC 字段）。
  * @param len     完整帧长度（包含末尾 iCRC 字段）。
  * @return 0 成功，非 0 失败。
+ *
+ * 说明：iCRC 会按网络字节序（大端）写入到最后 4 字节。
  */
 int rocev2_icrc_fill(uint8_t *packet, size_t len);
 
@@ -35,6 +37,9 @@ int rocev2_icrc_fill(uint8_t *packet, size_t len);
  * @param packet  指向完整以太网帧（包含末尾 4 字节 iCRC 字段）。
  * @param len     完整帧长度（包含末尾 iCRC 字段）。
  * @return 0 校验通过，1 校验不通过，负数为参数或解析失败。
+ *
+ * 兼容性说明：校验时同时兼容 iCRC 尾字段的大端/小端编码；
+ * 推荐发送端使用大端。
  */
 int rocev2_icrc_verify(const uint8_t *packet, size_t len);
 

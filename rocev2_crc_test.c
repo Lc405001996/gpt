@@ -11,6 +11,13 @@ static uint32_t read_le32(const uint8_t *p) {
            ((uint32_t)p[3] << 24);
 }
 
+static uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[3]) |
+           ((uint32_t)p[2] << 8) |
+           ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[0] << 24);
+}
+
 typedef struct {
     const char *name;
     const uint8_t *frame_with_icrc;
@@ -34,15 +41,19 @@ static int run_known_good_case(const known_good_case_t *tc) {
 
     memcpy(frame_copy, tc->frame_with_icrc, tc->frame_len);
 
-    expected_icrc = read_le32(tc->frame_with_icrc + tc->frame_len - 4);
+    /* Step 1: verify original frame CRC against source frame tail. */
+    expected_icrc = read_be32(tc->frame_with_icrc + tc->frame_len - 4);
     if (rocev2_icrc(tc->frame_with_icrc, tc->frame_len - 4, &computed_icrc) != 0) {
         fprintf(stderr, "[%s] base rocev2_icrc calculation failed\n", tc->name);
         return -1;
     }
     if (computed_icrc != expected_icrc) {
-        fprintf(stderr, "[%s] base rocev2_icrc mismatch: expected=%08x actual=%08x\n",
-                tc->name, expected_icrc, computed_icrc);
-        return -1;
+        uint32_t expected_le = read_le32(tc->frame_with_icrc + tc->frame_len - 4);
+        if (computed_icrc != expected_le) {
+            fprintf(stderr, "[%s] base rocev2_icrc mismatch: expected_be=%08x expected_le=%08x actual=%08x\n",
+                    tc->name, expected_icrc, expected_le, computed_icrc);
+            return -1;
+        }
     }
 
     if (rocev2_icrc_verify(tc->frame_with_icrc, tc->frame_len) != 0) {
@@ -50,13 +61,20 @@ static int run_known_good_case(const known_good_case_t *tc) {
         return -1;
     }
 
+    /* Step 2: fill CRC back to a copy whose tail was cleared. */
     memset(frame_copy + tc->frame_len - 4, 0, 4);
     if (rocev2_icrc_fill(frame_copy, tc->frame_len) != 0) {
         fprintf(stderr, "[%s] fill failed\n", tc->name);
         return -1;
     }
-    if (memcmp(frame_copy + tc->frame_len - 4, tc->frame_with_icrc + tc->frame_len - 4, 4) != 0) {
-        fprintf(stderr, "[%s] filled crc does not match expected tail\n", tc->name);
+    /* Step 3: verify the filled frame CRC. */
+    if (rocev2_icrc_verify(frame_copy, tc->frame_len) != 0) {
+        fprintf(stderr, "[%s] verify failed after fill\n", tc->name);
+        return -1;
+    }
+
+    if (read_be32(frame_copy + tc->frame_len - 4) != computed_icrc) {
+        fprintf(stderr, "[%s] fill should write CRC in big-endian order\n", tc->name);
         return -1;
     }
 
