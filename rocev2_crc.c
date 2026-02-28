@@ -16,6 +16,20 @@
 
 static uint32_t crc32_table[256];
 static int crc32_table_ready = 0;
+static const uint8_t rocev2_preface[8] = {
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
+};
+
+struct mutable_byte {
+    size_t off;
+    uint8_t value;
+};
+
+struct crc_mask_plan {
+    size_t ip_off;
+    struct mutable_byte bytes[8];
+    size_t count;
+};
 
 static uint16_t read_be16(const uint8_t *p) {
     return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
@@ -91,15 +105,18 @@ static int parse_eth_ip_offset(const uint8_t *pkt, size_t len, size_t *ip_off) {
     return 0;
 }
 
-static int rocev2_mask_mutable_fields(uint8_t *pkt, size_t len, size_t ip_off) {
-    if (ip_off >= len) {
+static int rocev2_plan_mutable_fields(const uint8_t *pkt, size_t len, size_t ip_off, struct crc_mask_plan *plan) {
+    if (ip_off >= len || !plan) {
         return -1;
     }
 
     size_t udp_off;
     size_t bth_off;
-    uint8_t *ip = pkt + ip_off;
+    const uint8_t *ip = pkt + ip_off;
     size_t ip_len = len - ip_off;
+
+    plan->ip_off = ip_off;
+    plan->count = 0;
 
     uint8_t version = ip[0] >> 4;
     if (version == 4u) {
@@ -116,10 +133,10 @@ static int rocev2_mask_mutable_fields(uint8_t *pkt, size_t len, size_t ip_off) {
             return -1;
         }
 
-        ip[1] = 0xFFu;
-        ip[8] = 0xFFu;
-        ip[10] = 0xFFu;
-        ip[11] = 0xFFu;
+        plan->bytes[plan->count++] = (struct mutable_byte){ .off = ip_off + 1, .value = 0xFFu };
+        plan->bytes[plan->count++] = (struct mutable_byte){ .off = ip_off + 8, .value = 0xFFu };
+        plan->bytes[plan->count++] = (struct mutable_byte){ .off = ip_off + 10, .value = 0xFFu };
+        plan->bytes[plan->count++] = (struct mutable_byte){ .off = ip_off + 11, .value = 0xFFu };
 
         udp_off = ip_off + ihl;
     } else if (version == 6u) {
@@ -131,11 +148,11 @@ static int rocev2_mask_mutable_fields(uint8_t *pkt, size_t len, size_t ip_off) {
             return -1;
         }
 
-        ip[0] = (uint8_t)((ip[0] & 0xF0u) | 0x0Fu);
-        ip[1] = 0xFFu;
-        ip[2] = 0xFFu;
-        ip[3] = 0xFFu;
-        ip[7] = 0xFFu;
+        plan->bytes[plan->count++] = (struct mutable_byte){ .off = ip_off + 0, .value = (uint8_t)((ip[0] & 0xF0u) | 0x0Fu) };
+        plan->bytes[plan->count++] = (struct mutable_byte){ .off = ip_off + 1, .value = 0xFFu };
+        plan->bytes[plan->count++] = (struct mutable_byte){ .off = ip_off + 2, .value = 0xFFu };
+        plan->bytes[plan->count++] = (struct mutable_byte){ .off = ip_off + 3, .value = 0xFFu };
+        plan->bytes[plan->count++] = (struct mutable_byte){ .off = ip_off + 7, .value = 0xFFu };
 
         udp_off = ip_off + 40;
     } else {
@@ -146,16 +163,35 @@ static int rocev2_mask_mutable_fields(uint8_t *pkt, size_t len, size_t ip_off) {
         return -1;
     }
 
-    pkt[udp_off + 6] = 0xFFu;
-    pkt[udp_off + 7] = 0xFFu;
+    plan->bytes[plan->count++] = (struct mutable_byte){ .off = udp_off + 6, .value = 0xFFu };
+    plan->bytes[plan->count++] = (struct mutable_byte){ .off = udp_off + 7, .value = 0xFFu };
 
     bth_off = udp_off + 8;
     if (bth_off + 12 > len) {
         return -1;
     }
 
-    pkt[bth_off + 4] = 0xFFu;
+    plan->bytes[plan->count++] = (struct mutable_byte){ .off = bth_off + 4, .value = 0xFFu };
     return 0;
+}
+
+static uint32_t crc32_update_masked(uint32_t crc, const uint8_t *packet, size_t len, const struct crc_mask_plan *plan) {
+    size_t cursor = plan->ip_off;
+
+    for (size_t i = 0; i < plan->count; ++i) {
+        size_t m_off = plan->bytes[i].off;
+        if (m_off > cursor) {
+            crc = crc32_update(crc, packet + cursor, m_off - cursor);
+        }
+
+        crc = (crc >> 8) ^ crc32_table[(crc ^ plan->bytes[i].value) & 0xFFu];
+        cursor = m_off + 1;
+    }
+
+    if (cursor < len) {
+        crc = crc32_update(crc, packet + cursor, len - cursor);
+    }
+    return crc;
 }
 
 int rocev2_icrc(const uint8_t *packet, size_t len, uint32_t *out_icrc) {
@@ -163,34 +199,21 @@ int rocev2_icrc(const uint8_t *packet, size_t len, uint32_t *out_icrc) {
         return -1;
     }
 
-    uint8_t *work = (uint8_t *)malloc(len);
-    if (!work) {
-        return -1;
-    }
-
-    memcpy(work, packet, len);
-
     size_t ip_off = 0;
-    if (parse_eth_ip_offset(work, len, &ip_off) != 0) {
-        free(work);
+    if (parse_eth_ip_offset(packet, len, &ip_off) != 0) {
         return -1;
     }
 
-    if (rocev2_mask_mutable_fields(work, len, ip_off) != 0) {
-        free(work);
+    struct crc_mask_plan plan;
+    if (rocev2_plan_mutable_fields(packet, len, ip_off, &plan) != 0) {
         return -1;
     }
 
     uint32_t crc = 0xFFFFFFFFu;
-    static const uint8_t rocev2_preface[8] = {
-        0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
-    };
-
     crc = crc32_update(crc, rocev2_preface, sizeof(rocev2_preface));
-    crc = crc32_update(crc, work + ip_off, len - ip_off);
+    crc = crc32_update_masked(crc, packet, len, &plan);
     crc ^= 0xFFFFFFFFu;
 
-    free(work);
     *out_icrc = crc;
     return 0;
 }
