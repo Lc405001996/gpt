@@ -25,10 +25,11 @@ typedef struct {
 } known_good_case_t;
 
 static int run_known_good_case(const known_good_case_t *tc) {
-    uint32_t computed_icrc = 0;
-    uint32_t expected_icrc = 0;
     uint8_t frame_copy[2048];
     size_t tamper_offset = 0;
+    uint32_t computed_icrc = 0;
+    uint32_t expected_icrc = 0;
+    uint32_t expected_le = 0;
 
     if (!tc || !tc->frame_with_icrc || tc->frame_len < 5) {
         fprintf(stderr, "invalid test case definition\n");
@@ -48,7 +49,7 @@ static int run_known_good_case(const known_good_case_t *tc) {
         return -1;
     }
     if (computed_icrc != expected_icrc) {
-        uint32_t expected_le = read_le32(tc->frame_with_icrc + tc->frame_len - 4);
+        expected_le = read_le32(tc->frame_with_icrc + tc->frame_len - 4);
         if (computed_icrc != expected_le) {
             fprintf(stderr, "[%s] base rocev2_icrc mismatch: expected_be=%08x expected_le=%08x actual=%08x\n",
                     tc->name, expected_icrc, expected_le, computed_icrc);
@@ -90,6 +91,18 @@ static int run_known_good_case(const known_good_case_t *tc) {
 }
 
 int main(void) {
+    uint8_t non_udp_frame[14 + 20 + 8 + 12 + 4] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xAA, 0xBB, 0x08, 0x00,
+        0x45, 0x00, 0x00, 0x2C, 0x12, 0x34, 0x00, 0x00,
+        0x40, 0x06, 0x00, 0x00, 0xC0, 0xA8, 0x01, 0x01,
+        0xC0, 0xA8, 0x01, 0x02, 0x12, 0xB7, 0x12, 0xB7,
+        0x00, 0x18, 0x00, 0x00, 0x81, 0x00, 0xFF, 0xFF,
+        0x00, 0x12, 0x34, 0x56, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    };
+    size_t i;
+
     /*
      * Add more known-good RoCEv2 samples here.
      * Usage: paste your full frame bytes (including 4-byte iCRC tail) as a C string.
@@ -192,24 +205,13 @@ int main(void) {
          */
     };
 
-    for (size_t i = 0; i < sizeof(known_good_cases) / sizeof(known_good_cases[0]); ++i) {
+    for (i = 0; i < sizeof(known_good_cases) / sizeof(known_good_cases[0]); ++i) {
         if (run_known_good_case(&known_good_cases[i]) != 0) {
             return 6;
         }
     }
 
     /* Non-UDP IPv4 packet should be rejected. */
-    uint8_t non_udp_frame[14 + 20 + 8 + 12 + 4] = {
-        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-        0x88, 0x99, 0xAA, 0xBB, 0x08, 0x00,
-        0x45, 0x00, 0x00, 0x2C, 0x12, 0x34, 0x00, 0x00,
-        0x40, 0x06, 0x00, 0x00, 0xC0, 0xA8, 0x01, 0x01,
-        0xC0, 0xA8, 0x01, 0x02, 0x12, 0xB7, 0x12, 0xB7,
-        0x00, 0x18, 0x00, 0x00, 0x81, 0x00, 0xFF, 0xFF,
-        0x00, 0x12, 0x34, 0x56, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-    };
-
     if (rocev2_icrc_fill(non_udp_frame, sizeof(non_udp_frame)) == 0) {
         fprintf(stderr, "non-UDP frame should be rejected\n");
         return 7;
