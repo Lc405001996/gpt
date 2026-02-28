@@ -56,8 +56,8 @@ static void write_be32(uint8_t *p, uint32_t v) {
 }
 
 static void crc32_init_table(void) {
-    uint32_t i;
     uint32_t c;
+    uint32_t i;
     int b;
 
     for (i = 0; i < 256; ++i) {
@@ -84,8 +84,8 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t len) {
 }
 
 static int parse_eth_ip_offset(const uint8_t *pkt, size_t len, size_t *ip_off) {
-    size_t off;
     uint16_t ether_type;
+    size_t off;
 
     if (len < ETH_HDR_LEN) {
         return -1;
@@ -105,6 +105,7 @@ static int parse_eth_ip_offset(const uint8_t *pkt, size_t len, size_t *ip_off) {
     if (ether_type != ETHERTYPE_IPV4 && ether_type != ETHERTYPE_IPV6) {
         return -1;
     }
+
     if (off >= len) {
         return -1;
     }
@@ -113,11 +114,12 @@ static int parse_eth_ip_offset(const uint8_t *pkt, size_t len, size_t *ip_off) {
     return 0;
 }
 
-static int rocev2_plan_mutable_fields(const uint8_t *pkt, size_t len, size_t ip_off, struct crc_mask_plan *plan) {
-    size_t udp_off;
-    size_t bth_off;
+static int rocev2_plan_mutable_fields(const uint8_t *pkt, size_t len,
+                                     size_t ip_off, struct crc_mask_plan *plan) {
     const uint8_t *ip;
+    size_t bth_off;
     size_t ip_len;
+    size_t udp_off;
     uint8_t version;
     size_t ihl;
 
@@ -188,10 +190,11 @@ static int rocev2_plan_mutable_fields(const uint8_t *pkt, size_t len, size_t ip_
     return 0;
 }
 
-static uint32_t crc32_update_masked(uint32_t crc, const uint8_t *packet, size_t len, const struct crc_mask_plan *plan) {
+static uint32_t crc32_update_masked(uint32_t crc, const uint8_t *packet,
+                                    size_t len, const struct crc_mask_plan *plan) {
     size_t cursor;
-    size_t i;
     size_t m_off;
+    size_t i;
 
     cursor = plan->ip_off;
 
@@ -212,9 +215,9 @@ static uint32_t crc32_update_masked(uint32_t crc, const uint8_t *packet, size_t 
 }
 
 int rocev2_icrc(const uint8_t *packet, size_t len, uint32_t *out_icrc) {
-    size_t ip_off;
     struct crc_mask_plan plan;
     uint32_t crc;
+    size_t ip_off;
 
     if (!packet || !out_icrc || len == 0) {
         return -1;
@@ -261,9 +264,9 @@ int rocev2_icrc_fill(uint8_t *packet, size_t len) {
  * High-level API #2: verify iCRC from the last 4 bytes of frame
  */
 int rocev2_icrc_verify(const uint8_t *packet, size_t len) {
-    uint32_t computed;
     uint32_t actual_be;
     uint32_t actual_le;
+    uint32_t computed;
 
     if (!packet || len <= ICRC_LEN) {
         return -1;
@@ -276,6 +279,7 @@ int rocev2_icrc_verify(const uint8_t *packet, size_t len) {
 
     actual_be = read_be32(packet + (len - ICRC_LEN));
     actual_le = read_le32(packet + (len - ICRC_LEN));
+
     if (computed == actual_be || computed == actual_le) {
         return 0;
     }
