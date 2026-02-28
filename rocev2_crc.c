@@ -1,5 +1,6 @@
 #include "rocev2_crc.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #define CRC32_POLY_REFLECTED 0xEDB88320U
@@ -29,6 +30,9 @@ struct crc_mask_plan {
     struct mutable_byte bytes[8];
     size_t count;
 };
+
+#define ROCEV2_CRC_ERROR(fmt, ...) \
+    fprintf(stderr, "[rocev2_icrc] " fmt "\n", ##__VA_ARGS__)
 
 static uint16_t read_be16(const uint8_t *p) {
     return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
@@ -88,6 +92,7 @@ static int parse_eth_ip_offset(const uint8_t *pkt, size_t len, size_t *ip_off) {
     size_t off;
 
     if (len < ETH_HDR_LEN) {
+        ROCEV2_CRC_ERROR("frame too short for ethernet header: len=%zu", len);
         return -1;
     }
 
@@ -96,6 +101,7 @@ static int parse_eth_ip_offset(const uint8_t *pkt, size_t len, size_t *ip_off) {
 
     while (ether_type == ETHERTYPE_VLAN_8021Q || ether_type == ETHERTYPE_VLAN_8021AD) {
         if (off + VLAN_TAG_LEN > len) {
+            ROCEV2_CRC_ERROR("truncated vlan tag while parsing eth header: off=%zu len=%zu", off, len);
             return -1;
         }
         ether_type = read_be16(pkt + off + 2);
@@ -103,10 +109,12 @@ static int parse_eth_ip_offset(const uint8_t *pkt, size_t len, size_t *ip_off) {
     }
 
     if (ether_type != ETHERTYPE_IPV4 && ether_type != ETHERTYPE_IPV6) {
+        ROCEV2_CRC_ERROR("unsupported ethertype for rocev2: 0x%04X", ether_type);
         return -1;
     }
 
     if (off >= len) {
+        ROCEV2_CRC_ERROR("invalid ip offset parsed from ethernet header: off=%zu len=%zu", off, len);
         return -1;
     }
 
@@ -124,6 +132,7 @@ static int rocev2_plan_mutable_fields(const uint8_t *pkt, size_t len,
     size_t ihl;
 
     if (ip_off >= len || !plan) {
+        ROCEV2_CRC_ERROR("invalid input for mutable-field plan: ip_off=%zu len=%zu plan=%p", ip_off, len, (void *)plan);
         return -1;
     }
 
@@ -136,15 +145,18 @@ static int rocev2_plan_mutable_fields(const uint8_t *pkt, size_t len,
     version = ip[0] >> 4;
     if (version == 4U) {
         if (ip_len < 20) {
+            ROCEV2_CRC_ERROR("ipv4 header too short: ip_len=%zu", ip_len);
             return -1;
         }
 
         ihl = (size_t)(ip[0] & 0x0FU) * 4U;
         if (ihl < 20 || ihl > ip_len) {
+            ROCEV2_CRC_ERROR("invalid ipv4 ihl: ihl=%zu ip_len=%zu", ihl, ip_len);
             return -1;
         }
 
         if (ip[9] != IPPROTO_UDP) {
+            ROCEV2_CRC_ERROR("ipv4 next protocol is not udp: proto=%u", ip[9]);
             return -1;
         }
 
@@ -156,10 +168,12 @@ static int rocev2_plan_mutable_fields(const uint8_t *pkt, size_t len,
         udp_off = ip_off + ihl;
     } else if (version == 6U) {
         if (ip_len < 40) {
+            ROCEV2_CRC_ERROR("ipv6 header too short: ip_len=%zu", ip_len);
             return -1;
         }
 
         if (ip[6] != IPPROTO_UDP) {
+            ROCEV2_CRC_ERROR("ipv6 next header is not udp: next_header=%u", ip[6]);
             return -1;
         }
 
@@ -171,10 +185,12 @@ static int rocev2_plan_mutable_fields(const uint8_t *pkt, size_t len,
 
         udp_off = ip_off + 40;
     } else {
+        ROCEV2_CRC_ERROR("unknown ip version in packet: version=%u", version);
         return -1;
     }
 
     if (udp_off + 8 > len) {
+        ROCEV2_CRC_ERROR("udp header exceeds frame length: udp_off=%zu len=%zu", udp_off, len);
         return -1;
     }
 
@@ -183,6 +199,7 @@ static int rocev2_plan_mutable_fields(const uint8_t *pkt, size_t len,
 
     bth_off = udp_off + 8;
     if (bth_off + 12 > len) {
+        ROCEV2_CRC_ERROR("bth header exceeds frame length: bth_off=%zu len=%zu", bth_off, len);
         return -1;
     }
 
@@ -220,15 +237,18 @@ int rocev2_icrc(const uint8_t *packet, size_t len, uint32_t *out_icrc) {
     size_t ip_off;
 
     if (!packet || !out_icrc || len == 0) {
+        ROCEV2_CRC_ERROR("invalid input to rocev2_icrc: packet=%p out_icrc=%p len=%zu", (const void *)packet, (void *)out_icrc, len);
         return -1;
     }
 
     ip_off = 0;
     if (parse_eth_ip_offset(packet, len, &ip_off) != 0) {
+        ROCEV2_CRC_ERROR("failed to parse ethernet/ip boundary");
         return -1;
     }
 
     if (rocev2_plan_mutable_fields(packet, len, ip_off, &plan) != 0) {
+        ROCEV2_CRC_ERROR("failed to identify mutable fields for crc masking");
         return -1;
     }
 
@@ -248,11 +268,13 @@ int rocev2_icrc_fill(uint8_t *packet, size_t len) {
     uint32_t icrc;
 
     if (!packet || len <= ICRC_LEN) {
+        ROCEV2_CRC_ERROR("invalid input to rocev2_icrc_fill: packet=%p len=%zu", (void *)packet, len);
         return -1;
     }
 
     icrc = 0;
     if (rocev2_icrc(packet, len - ICRC_LEN, &icrc) != 0) {
+        ROCEV2_CRC_ERROR("failed to compute icrc before fill");
         return -1;
     }
 
@@ -269,11 +291,13 @@ int rocev2_icrc_verify(const uint8_t *packet, size_t len) {
     uint32_t computed;
 
     if (!packet || len <= ICRC_LEN) {
+        ROCEV2_CRC_ERROR("invalid input to rocev2_icrc_verify: packet=%p len=%zu", (const void *)packet, len);
         return -1;
     }
 
     computed = 0;
     if (rocev2_icrc(packet, len - ICRC_LEN, &computed) != 0) {
+        ROCEV2_CRC_ERROR("failed to compute icrc during verify");
         return -1;
     }
 
